@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sun Safety Dashboard</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 20px;
+      background: #f0f8ff;
+    }
+    h1 { color: #1E3A5F; }
+    button {
+      background: #2E75B6;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 10px 5px;
+    }
+    button:hover { background: #1E3A5F; }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .result { font-size: 24px; font-weight: bold; color: #1E3A5F; }
+    .error { color: red; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    th {
+      background: #1E3A5F;
+      color: white;
+      padding: 8px 12px;
+      text-align: left;
+    }
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid #ddd;
+    }
+    tr:nth-child(even) { background: #f5f5f5; }
+  </style>
+</head>
+<body>
+
+  <h1>☀️ Hello World — Sun Safety Dashboard</h1>
+  <p>Backend API test page. Replace this with your real frontend!</p>
+
+  <!-- UV Index Card -->
+  <div class="card">
+    <h2>Live UV Index</h2>
+    <p>Gets your location from the browser and fetches the current UV index.</p>
+    <button onclick="getUV()">Get My UV Index</button>
+    <div id="uv-result" class="result"></div>
+  </div>
+
+  <!-- Melanoma Data Card -->
+  <div class="card">
+    <h2>Melanoma Mortality Data</h2>
+    <p>Fetches all melanoma death data from RDS database.</p>
+    <button onclick="getMelanomaData()">Load Melanoma Data</button>
+    <div id="melanoma-result"></div>
+  </div>
+
+  <script>
+    const API = 'https://y7zqfc3zh6.execute-api.ap-southeast-2.amazonaws.com';
+
+    // UV Index
+    async function getUV() {
+      const display = document.getElementById('uv-result');
+      display.textContent = 'Getting your location...';
+
+      if (!navigator.geolocation) {
+        display.innerHTML = '<span class="error">Geolocation not supported</span>';
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(async (position) => {
+        const { latitude: lat, longitude: lng } = position.coords;
+        display.textContent = `Location found (${lat.toFixed(2)}, ${lng.toFixed(2)}) — fetching UV...`;
+
+        try {
+          const res  = await fetch(`${API}/api/uv?lat=${lat}&lng=${lng}`);
+          const data = await res.json();
+          display.textContent = `UV Index: ${data.uv} 🌞 (${lat.toFixed(2)}, ${lng.toFixed(2)})`;
+        } catch (err) {
+          display.innerHTML = `<span class="error">Error: ${err.message}</span>`;
+        }
+      }, () => {
+        display.innerHTML = '<span class="error">Location access denied</span>';
+      });
+    }
+
+    // Melanoma Data
+    async function getMelanomaData() {
+      const display = document.getElementById('melanoma-result');
+      display.textContent = 'Loading...';
+
+      try {
+        const res  = await fetch(`${API}/api/get_all_skin_mortality_data`);
+        const data = await res.json();
+
+        // Build a table
+        let html = `<p>Loaded <strong>${data.length} years</strong> of data</p>`;
+        html += '<table><tr><th>Year</th><th>Deaths</th></tr>';
+        data.forEach(row => {
+          html += `<tr><td>${row.year}</td><td>${row.deaths}</td></tr>`;
+        });
+        html += '</table>';
+        display.innerHTML = html;
+
+      } catch (err) {
+        display.innerHTML = `<span class="error">Error: ${err.message}</span>`;
+      }
+    }
+  </script>
+
+</body>
+</html>

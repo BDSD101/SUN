@@ -1,15 +1,22 @@
 """
-Handles MySQL connection and seeding the cancer mortality table from Excel.
+Handles MySQL connection, seeding from Excel, and querying cancer mortality data.
+
+Local setup:
+    1. Create a .env file with your DB credentials (see .env.example)
+    2. Run: python3 database.py  (seeds the database from Excel)
+
+AWS Lambda:
+    - Set environment variables in Lambda console
+    - seed_database() is never called on Lambda, only query functions are used
 """
 
 import os
 import pymysql
-from openpyxl import load_workbook
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv()  # Reads .env locally, ignored on Lambda (uses env vars instead)
 
-# ── Connection config (reads from .env) ───────────────────────────────────────
+# ── Connection config ─────────────────────────────────────────────────────────
 
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "localhost"),
@@ -17,14 +24,18 @@ DB_CONFIG = {
     "database": os.getenv("DB_NAME", "health_dashboard"),
     "user":     os.getenv("DB_USER", "root"),
     "password": os.getenv("DB_PASSWORD", ""),
+    "ssl":      {"ssl": {}},
+    "cursorclass": pymysql.cursors.DictCursor
 }
+
+# ── Seeding config (local only) ───────────────────────────────────────────────
 
 EXCEL_PATH = os.path.join(
     os.path.dirname(__file__),
     "aihw-can-122-CDiA-2023-Book-2a-Cancer-mortality-and-age-standardised-rates-by-age-5-year-groups.xlsx",
 )
 SHEET_NAME = "Table S2a.1"
-DATA_START = 7   # first data row
+DATA_START = 7
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS cancer_mortality (
@@ -54,11 +65,12 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 
 BATCH_SIZE = 5000
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def get_connection():
     return pymysql.connect(**DB_CONFIG)
 
 def _clean(value):
-    """Return None for missing/placeholder values, otherwise the value itself."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -67,7 +79,6 @@ def _clean(value):
             return None
         return stripped
     return value
-
 
 def _to_float(value):
     cleaned = _clean(value)
@@ -78,7 +89,6 @@ def _to_float(value):
     except (ValueError, TypeError):
         return None
 
-
 def _to_int(value):
     cleaned = _clean(value)
     if cleaned is None:
@@ -88,18 +98,20 @@ def _to_int(value):
     except (ValueError, TypeError):
         return None
 
+# ── Query functions (used by Lambda) ─────────────────────────────────────────
 
 def get_all_skin_mortality_data():
     """
-    Fetches year and death counts specifically for 'Melanoma of the skin'
-    from the cancer_mortality table, including aggregated 'Persons' data.
+    Returns melanoma death counts grouped by year.
+    Used to plot the mortality trend chart on the frontend.
     """
     conn = get_connection()
-    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+    with conn.cursor() as cur:
         cur.execute("""
             SELECT year, SUM(count) AS deaths
             FROM cancer_mortality
-            WHERE cancer_group_site = 'Melanoma of the skin' AND sex = 'Persons'
+            WHERE cancer_group_site = 'Melanoma of the skin'
+            AND sex = 'Persons'
             GROUP BY year
             ORDER BY year
         """)
@@ -107,11 +119,12 @@ def get_all_skin_mortality_data():
     conn.close()
     return result
 
+# ── Seeding (local only, never runs on Lambda) ────────────────────────────────
 
 def seed_database():
     """
-    Drops the existing table, recreates it, and seeds it with data from the
-    Excel file.
+    Drops the existing table, recreates it, and seeds from the Excel file.
+    Run this once locally to populate RDS before deploying to Lambda.
     """
     print("Connecting to database...")
     conn = get_connection()
@@ -124,41 +137,36 @@ def seed_database():
         print("Table created successfully.")
 
         print(f"Loading workbook '{EXCEL_PATH}'...")
+        from openpyxl import load_workbook
         workbook = load_workbook(filename=EXCEL_PATH, read_only=True)
         sheet = workbook[SHEET_NAME]
         print(f"Workbook loaded. Reading from sheet '{SHEET_NAME}'.")
 
         data_to_insert = []
-        # Iterate over rows, starting from the first data row
         for row in sheet.iter_rows(min_row=DATA_START, values_only=True):
-            # Skip rows where the first cell is empty, as they are separators
             if not _clean(row[0]):
                 continue
-
-            # Map cell values to their respective columns, with cleaning
             mapped_row = (
-                _clean(row[0]),   # data_type
-                _clean(row[1]),   # cancer_group_site
-                _to_int(row[2]),  # year
-                _clean(row[3]),   # sex
-                _clean(row[4]),   # age_group
-                _to_int(row[5]),  # count
-                _to_float(row[6]),# age_specific_rate
-                _to_float(row[7]),# asr_2001_aus_std
-                _to_float(row[8]),# asr_2023_aus
-                _to_float(row[9]),# asr_who
-                _to_float(row[10]),# asr_segi
-                _clean(row[11]),  # icd10_codes
+                _clean(row[0]),
+                _clean(row[1]),
+                _to_int(row[2]),
+                _clean(row[3]),
+                _clean(row[4]),
+                _to_int(row[5]),
+                _to_float(row[6]),
+                _to_float(row[7]),
+                _to_float(row[8]),
+                _to_float(row[9]),
+                _to_float(row[10]),
+                _clean(row[11]),
             )
             data_to_insert.append(mapped_row)
 
-            # Insert in batches to manage memory
             if len(data_to_insert) == BATCH_SIZE:
                 cur.executemany(INSERT_SQL, data_to_insert)
                 print(f"Inserted {len(data_to_insert)} rows...")
                 data_to_insert = []
 
-        # Insert any remaining rows
         if data_to_insert:
             cur.executemany(INSERT_SQL, data_to_insert)
             print(f"Inserted final {len(data_to_insert)} rows.")
@@ -167,10 +175,16 @@ def seed_database():
     conn.close()
     print("Database seeding complete and connection closed.")
 
-
-def main():
-    """Main function to seed the database."""
+if __name__ == "__main__":
     seed_database()
 
-if __name__ == "__main__":
-    main()
+## Also Create a .env.example for GitHub
+
+#Create a file called `.env.example` (safe to commit, no real credentials) so teammates know exactly what to fill in:
+#DB_HOST=your-rds-endpoint.rds.amazonaws.com
+#DB_PORT=3306
+#DB_NAME=health_dashboard
+#DB_USER=admin
+#DB_PASSWORD=your_password_here
+#And make sure `.gitignore` has:
+#.env
